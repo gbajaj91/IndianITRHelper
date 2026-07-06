@@ -9,14 +9,23 @@ Python module to generate Indian ITR schedule FA under section A3 automatically
 4. Click on `Download` button which will open the popup.
 5. Click on `Download Expanded` which will prompt you to download the `BenefitHistory.xlsx` file
 
-## Run the script
-The script requires Python 3.8 or higher. Please ensure that it is installed on your system. In newer versions of Python, you may encounter an [`externally-managed-environment`](https://peps.python.org/pep-0668/). In this case, you can create a [Python virtual environment](https://docs.python.org/3/library/venv.html#creating-virtual-environments) and then run the script after activating the virtual environment.
+## Setup
+The script requires Python 3.8 or higher. Please ensure that it is installed on your system. In newer versions of Python, you may encounter an [`externally-managed-environment`](https://peps.python.org/pep-0668/), so create and activate a [Python virtual environment](https://docs.python.org/3/library/venv.html#creating-virtual-environments) before installing the dependencies.
 
-Below example, the command runs the script with the downloaded `BenefitHistory.xlsx`
+```sh
+# From the repository root
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip3 install .
+```
+
+This installs all required dependencies (`pandas`, `openpyxl`, `yfinance`, `requests`).
+
+## Run the script
+With the virtual environment activated, run the script with the downloaded `BenefitHistory.xlsx`:
 ```sh
 ./run.py -i "<absolute_folder_of_benefit_history_file>/BenefitHistory.xlsx" -ay 2023
 ```
-You may also have to install the missing Python3 dependencies using command `pip3 install <dependency_name>`
 
 Detailed options are listed below
 ```txt
@@ -38,6 +47,21 @@ options:
                         Current year of assessment year. For AY 2019-2020, input will be 2019. Input will be of type integer
   -v, --verbose         Enable the debug logs
 ```
+
+## Historic data auto-refresh
+`run.py` refreshes both data sources automatically before generating the schedule, so you
+do not need to run the refresh scripts yourself:
+
+- **Share FMV** (`historic_data/shares/<ticker>/data.csv`) from Yahoo Finance via `yfinance`,
+  for every ticker in your `BenefitHistory.xlsx`.
+- **RBI/FBIL reference rates** (`historic_data/rates/rbi/rates.xls`) from the FBIL benchmark
+  via the public [Frankfurter API](https://frankfurter.dev), for every currency used by those
+  tickers. FBIL data is available from 2018-07-10 onwards; only the refreshed currency pairs
+  are replaced, other pairs already in the file are left untouched.
+
+If a dependency is missing or there is no network, the run logs a warning and falls back to
+the bundled data. Pass `--skip-refresh` to force the bundled data (useful when offline). You
+can still run `refresh_historic_data.py` or `refresh_rbi_rates.py` manually.
 
 ## Output
 Inside the `output` folder(if nothing else is specified), the `ticker` folder will be created under which `fa_entries.csv` will be generated. For example, if your `BenefitHistory.xlsx`

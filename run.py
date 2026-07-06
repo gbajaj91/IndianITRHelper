@@ -3,10 +3,15 @@ import argparse
 import os
 import sys
 
+from datetime import date, timedelta
+
 from parser.demat.etrade import etrade_benefit_history_parser
 from utils import logger, date_utils
 from parser.demat.etrade import etrade_holdings_bystatus_parser
 from parser.itr import faa3_parser
+from utils.ticker_mapping import ticker_currency_info, ticker_org_info
+from refresh_historic_data import refresh, DEFAULT_START
+import refresh_rbi_rates
 
 # arguments defaults
 script_path = os.path.realpath(os.path.dirname(__file__))
@@ -73,12 +78,25 @@ def main():
         default=False,
         help="Enable the debug logs",
     )
+    parser.add_argument(
+        "--skip-refresh",
+        action="store_true",
+        dest="skip_refresh",
+        default=False,
+        help="Skip refreshing historic share prices from Yahoo Finance and use the "
+        "bundled historic_data CSVs instead (useful when offline)",
+    )
 
     args = parser.parse_args()
 
     logger.DEBUG = args.debug
     etrade_benefit_history_parser.DEBUG = args.debug
     etrade_holdings_bystatus_parser.DEBUG = args.debug
+
+    # Refresh before parsing: RSU rows resolve their FMV from the share price CSV
+    # during parsing, so the historic data must be up to date beforehand.
+    if not args.skip_refresh:
+        refresh_historic_data()
 
     if args.source_mode == "etrade_holdings_bystatus":
         purchases = etrade_holdings_bystatus_parser.parse(
@@ -97,6 +115,45 @@ def main():
     faa3_parser.parse(
         args.calendar_mode, purchases, args.assessment_year, args.output_folder
     )
+
+
+def refresh_historic_data():
+    """Best-effort refresh of historic share prices and RBI/FBIL reference rates
+    for every configured ticker. Failures (missing dependency, no network) are
+    logged and ignored so the run falls back to the bundled historic_data."""
+    end = (date.today() + timedelta(days=1)).isoformat()
+    tickers = sorted(ticker_org_info)
+    for ticker in tickers:
+        try:
+            refresh(ticker, DEFAULT_START, end)
+        except SystemExit as err:
+            logger.log(
+                f"Skipping share price refresh for {ticker} ({err}); using bundled "
+                "historic data. Pass --skip-refresh to suppress this."
+            )
+        except Exception as err:
+            logger.log(
+                f"Could not refresh share prices for {ticker} ({err}); "
+                "using bundled historic data."
+            )
+
+    currencies = sorted(
+        {ticker_currency_info[ticker] for ticker in tickers if ticker in ticker_currency_info}
+    )
+    if currencies:
+        try:
+            refresh_rbi_rates.refresh(
+                currencies, refresh_rbi_rates.DEFAULT_START, date.today().isoformat()
+            )
+        except SystemExit as err:
+            logger.log(
+                f"Skipping reference rate refresh ({err}); using bundled rates. "
+                "Pass --skip-refresh to suppress this."
+            )
+        except Exception as err:
+            logger.log(
+                f"Could not refresh reference rates ({err}); using bundled rates."
+            )
 
 
 if __name__ == "__main__":

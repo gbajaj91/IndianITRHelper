@@ -43,6 +43,11 @@ options:
                         Specify the source mode. Currently, only benefit history from etrade is supported, default = etrade_benefit_history
   -cal {calendar,financial}, --calendar-mode {calendar,financial}
                         Specify the calendar period for consideration, default = calendar
+  -r {fa,capital_gains}, --report {fa,capital_gains}
+                        Specify the report to generate: 'fa' for Schedule FA section A3
+                        (fa_entries.csv/transactions.csv), or 'capital_gains' for an LTCG/STCG
+                        capital gains report scoped to the financial year (capital_gains.csv),
+                        default = fa
   -ay ASSESSMENT_YEAR, --assessment-year ASSESSMENT_YEAR
                         Current year of assessment year. For AY 2019-2020, input will be 2019. Input will be of type integer
   -v, --verbose         Enable the debug logs
@@ -64,14 +69,32 @@ the bundled data. Pass `--skip-refresh` to force the bundled data (useful when o
 can still run `refresh_historic_data.py` or `refresh_rbi_rates.py` manually.
 
 ## Output
-Inside the `output` folder(if nothing else is specified), two CSV files are generated covering every
-ticker found in your input file:
+Output is namespaced by source and report, as `<output>/<source-mode>/<report>/`, so different
+combinations (e.g. an `fa` run and a `capital_gains` run, or two different brokers) never overwrite
+each other. For example, `-m schwab_transactions -r fa` writes to `output/schwab_transactions/fa/`,
+while `-m schwab_transactions -r capital_gains` writes to `output/schwab_transactions/capital_gains/`.
+
+For the default `-r fa` report, two CSV files are generated covering every ticker found in your
+input file:
 
 - `transactions.csv` - the full workings (quantities, native purchase/peak/closing share prices,
   RBI rates applied, the resulting INR values, and realized gain/loss in both native currency and
   INR) for every lot, so you can validate the numbers before filing.
 - `fa_entries.csv` - all tickers combined, in the exact column format Schedule FA section A3 expects,
   ready to upload as-is.
+
+## Capital gains report
+Pass `-r capital_gains` to generate `capital_gains.csv` instead of the Schedule FA report. This is
+always scoped to the financial year (1-Apr to 31-Mar) regardless of `--calendar-mode`, since Indian
+capital gains are always reported on a financial-year basis. Only sells (not merely-held lots) that
+fall within that financial year are included - one row per sale, classified as `LTCG` (held more
+than 24 months - the threshold for unlisted/foreign equity) or `STCG` otherwise, with the resulting
+gain/loss in both native currency and INR.
+
+**Limitation**: only sources that record each sale's own quantity/price (currently just Schwab, via
+its Buy/Sell rows) can appear here. ESPP purchases only record that a lot was fully sold as of some
+date, not the quantity/price of that sale, so they're skipped (logged, not silently dropped) until
+that data is available.
 
 # Limitations
 - Only parsing data from `BenefitHistory.xlsx` is supported.

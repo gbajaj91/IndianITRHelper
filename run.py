@@ -9,7 +9,7 @@ from parser.demat.etrade import etrade_benefit_history_parser
 from utils import logger, date_utils, ticker_mapping
 from parser.demat.etrade import etrade_holdings_bystatus_parser
 from parser.demat.schwab import schwab_transaction_parser
-from parser.itr import faa3_parser
+from parser.itr import faa3_parser, capital_gains_parser
 from refresh_historic_data import refresh, DEFAULT_START
 import refresh_rbi_rates
 
@@ -19,6 +19,7 @@ DEFAULT_OUTPUT_FOLDER_NAME = "output"
 default_output_folder_abs_path = os.path.join(script_path, DEFAULT_OUTPUT_FOLDER_NAME)
 DEFAULT_SOURCE_MODE = "etrade_benefit_history"
 DEFAULT_CALENDER_MODE = "calendar"
+DEFAULT_REPORT = "fa"
 
 
 def main():
@@ -63,6 +64,17 @@ def main():
         help=f"Specify the calendar period for consideration, default = {DEFAULT_CALENDER_MODE}",
     )
     parser.add_argument(
+        "-r",
+        "--report",
+        action="store",
+        default=DEFAULT_REPORT,
+        dest="report",
+        choices=[DEFAULT_REPORT, "capital_gains"],
+        help="Specify the report to generate: 'fa' for Schedule FA section A3 "
+        "(fa_entries.csv/transactions.csv), or 'capital_gains' for an LTCG/STCG "
+        f"capital gains report scoped to the financial year (capital_gains.csv), default = {DEFAULT_REPORT}",
+    )
+    parser.add_argument(
         "-ay",
         "--assessment-year",
         action="store",
@@ -90,6 +102,13 @@ def main():
 
     args = parser.parse_args()
 
+    # Namespace output by source and report type so e.g. an "fa" run for
+    # schwab_transactions doesn't overwrite/mix with a "capital_gains" run,
+    # or with an etrade run against a different broker's data.
+    output_folder_abs_path = os.path.join(
+        args.output_folder, args.source_mode, args.report
+    )
+
     logger.DEBUG = args.debug
     etrade_benefit_history_parser.DEBUG = args.debug
     etrade_holdings_bystatus_parser.DEBUG = args.debug
@@ -107,32 +126,49 @@ def main():
     if not args.skip_refresh:
         refresh_historic_data(tickers)
 
+    # Capital gains is always reported on a financial-year basis in India,
+    # independent of --calendar-mode (which only governs the Schedule FA
+    # report) - so the parsing-stage cutoff must follow the report being
+    # generated, not the (possibly irrelevant) --calendar-mode flag.
+    parsing_calendar_mode = (
+        "financial" if args.report == "capital_gains" else args.calendar_mode
+    )
+
     if args.source_mode == "etrade_holdings_bystatus":
         purchases = etrade_holdings_bystatus_parser.parse(
-            args.input_excel_file, args.output_folder
+            args.input_excel_file, output_folder_abs_path
         )
     elif args.source_mode == "schwab_transactions":
         purchases = schwab_transaction_parser.parse(
             args.input_excel_file,
-            args.output_folder,
+            output_folder_abs_path,
             time_bounds=(
                 None,
-                date_utils.calendar_range("calendar", args.assessment_year)[1],
+                date_utils.calendar_range(parsing_calendar_mode, args.assessment_year)[
+                    1
+                ],
             ),
         )
     else:
         purchases = etrade_benefit_history_parser.parse(
             args.input_excel_file,
-            args.output_folder,
+            output_folder_abs_path,
             time_bounds=(
                 None,
-                date_utils.calendar_range("calendar", args.assessment_year)[1],
+                date_utils.calendar_range(parsing_calendar_mode, args.assessment_year)[
+                    1
+                ],
             ),
         )
 
-    faa3_parser.parse(
-        args.calendar_mode, purchases, args.assessment_year, args.output_folder
-    )
+    if args.report == "capital_gains":
+        capital_gains_parser.parse(
+            purchases, args.assessment_year, output_folder_abs_path
+        )
+    else:
+        faa3_parser.parse(
+            args.calendar_mode, purchases, args.assessment_year, output_folder_abs_path
+        )
 
 
 def refresh_historic_data(tickers):

@@ -64,14 +64,21 @@ the bundled data. Pass `--skip-refresh` to force the bundled data (useful when o
 can still run `refresh_historic_data.py` or `refresh_rbi_rates.py` manually.
 
 ## Output
-Inside the `output` folder(if nothing else is specified), the `ticker` folder will be created under which `fa_entries.csv` will be generated. For example, if your `BenefitHistory.xlsx`
-contains entries related to `adbe` then the folder will be `output/adbe/fa_entries.csv`
+Inside the `output` folder(if nothing else is specified), two CSV files are generated covering every
+ticker found in your input file:
+
+- `transactions.csv` - the full workings (quantities, native purchase/peak/closing share prices,
+  RBI rates applied, the resulting INR values, and realized gain/loss in both native currency and
+  INR) for every lot, so you can validate the numbers before filing.
+- `fa_entries.csv` - all tickers combined, in the exact column format Schedule FA section A3 expects,
+  ready to upload as-is.
 
 # Limitations
 - Only parsing data from `BenefitHistory.xlsx` is supported.
 -  If you have sold any shares, the script will not adjust those. You have to subtract the `BenefitHistory.xlsx` manually
 -  This script is only tested under Mac, with a single `adbe` ticker with `calendar` `--calendar-mode` mode
 -  Currently script works based on `historic_data`. Share FMV values is  present in [data.csv][data csv file]([ref][data csv ref])(check the first and last data in the file) and [rates.xls][SBI rates]([ref][SBI rates ref]) for RBI rate conversion
+-  **TODO**: Org info/currency per ticker is fetched dynamically from yfinance, but the Schedule FA "Country Code" mapping (`utils/ticker_mapping.py`'s `COUNTRY_CODE_BY_NAME`) currently only covers `United States`. A ticker whose company is headquartered elsewhere will fail fast with a clear error until that country's ITD numeric code is added to the table.
 
 # Author
 [Atul Gupta](https://github.com/atulgpt)

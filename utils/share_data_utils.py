@@ -5,8 +5,7 @@ import pandas as pd
 import os
 import typing as t
 
-from . import date_utils, logger
-from .ticker_mapping import ticker_currency_info
+from . import date_utils, logger, ticker_mapping
 from .rates import rbi_rates_utils
 
 
@@ -134,7 +133,7 @@ def get_closing_price(ticker: str, end_time_in_ms: int) -> float:
 
 def get_peak_price_in_inr(
     ticker: str, start_time_in_ms: int, end_time_in_ms: int
-) -> float:
+) -> TimedFmvWithInrRate:
     if start_time_in_ms > end_time_in_ms:
         raise AssertionError(
             f"start_time_in_ms = {start_time_in_ms} is greater "
@@ -156,7 +155,7 @@ def get_peak_price_in_inr(
         lambda price: {
             **price,
             "inr_rate": rbi_rates_utils.get_rate_for_prev_mon_for_time_in_ms(
-                ticker_currency_info[ticker], price["entry_time_in_millis"]
+                ticker_mapping.get_currency(ticker), price["entry_time_in_millis"]
             ),
         },
         price_map,
@@ -185,4 +184,4 @@ def get_peak_price_in_inr(
         + f"INR at rate {max_value['inr_rate']} INR/USD"
     )
 
-    return max_value["fmv"] * max_value["inr_rate"]
+    return max_value

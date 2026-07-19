@@ -6,10 +6,10 @@ import sys
 from datetime import date, timedelta
 
 from parser.demat.etrade import etrade_benefit_history_parser
-from utils import logger, date_utils
+from utils import logger, date_utils, ticker_mapping
 from parser.demat.etrade import etrade_holdings_bystatus_parser
+from parser.demat.schwab import schwab_transaction_parser
 from parser.itr import faa3_parser
-from utils.ticker_mapping import ticker_currency_info, ticker_org_info
 from refresh_historic_data import refresh, DEFAULT_START
 import refresh_rbi_rates
 
@@ -39,7 +39,8 @@ def main():
         "--input",
         action="store",
         dest="input_excel_file",
-        help="Specify the absolute path for input benefit history(BenefitHistory.xlsx) Excel file",
+        help="Specify the absolute path for the input file: benefit history(BenefitHistory.xlsx) "
+        "Excel file for etrade source modes, or the transactions CSV export for schwab_transactions",
         required=True,
     )
     parser.add_argument(
@@ -48,7 +49,7 @@ def main():
         action="store",
         default=DEFAULT_SOURCE_MODE,
         dest="source_mode",
-        choices=[f"{DEFAULT_SOURCE_MODE}", "etrade_holdings_bystatus"],
+        choices=[f"{DEFAULT_SOURCE_MODE}", "etrade_holdings_bystatus", "schwab_transactions"],
         help=f"Specify the source mode, default = {DEFAULT_SOURCE_MODE}",
     )
     parser.add_argument(
@@ -92,15 +93,32 @@ def main():
     logger.DEBUG = args.debug
     etrade_benefit_history_parser.DEBUG = args.debug
     etrade_holdings_bystatus_parser.DEBUG = args.debug
+    schwab_transaction_parser.DEBUG = args.debug
+
+    if args.source_mode == "etrade_holdings_bystatus":
+        tickers = etrade_holdings_bystatus_parser.extract_tickers(args.input_excel_file)
+    elif args.source_mode == "schwab_transactions":
+        tickers = schwab_transaction_parser.extract_tickers(args.input_excel_file)
+    else:
+        tickers = etrade_benefit_history_parser.extract_tickers(args.input_excel_file)
 
     # Refresh before parsing: RSU rows resolve their FMV from the share price CSV
     # during parsing, so the historic data must be up to date beforehand.
     if not args.skip_refresh:
-        refresh_historic_data()
+        refresh_historic_data(tickers)
 
     if args.source_mode == "etrade_holdings_bystatus":
         purchases = etrade_holdings_bystatus_parser.parse(
             args.input_excel_file, args.output_folder
+        )
+    elif args.source_mode == "schwab_transactions":
+        purchases = schwab_transaction_parser.parse(
+            args.input_excel_file,
+            args.output_folder,
+            time_bounds=(
+                None,
+                date_utils.calendar_range("calendar", args.assessment_year)[1],
+            ),
         )
     else:
         purchases = etrade_benefit_history_parser.parse(
@@ -117,12 +135,13 @@ def main():
     )
 
 
-def refresh_historic_data():
+def refresh_historic_data(tickers):
     """Best-effort refresh of historic share prices and RBI/FBIL reference rates
-    for every configured ticker. Failures (missing dependency, no network) are
-    logged and ignored so the run falls back to the bundled historic_data."""
+    for every ticker found in the input file. Failures (missing dependency, no
+    network) are logged and ignored so the run falls back to bundled/cached
+    historic_data."""
     end = (date.today() + timedelta(days=1)).isoformat()
-    tickers = sorted(ticker_org_info)
+    tickers = sorted(tickers)
     for ticker in tickers:
         try:
             refresh(ticker, DEFAULT_START, end)
@@ -137,9 +156,16 @@ def refresh_historic_data():
                 "using bundled historic data."
             )
 
-    currencies = sorted(
-        {ticker_currency_info[ticker] for ticker in tickers if ticker in ticker_currency_info}
-    )
+    currencies = set()
+    for ticker in tickers:
+        try:
+            currencies.add(ticker_mapping.get_currency(ticker))
+        except Exception as err:
+            logger.log(
+                f"Could not determine currency for {ticker} ({err}); "
+                "skipping its reference rate refresh."
+            )
+    currencies = sorted(currencies)
     if currencies:
         try:
             refresh_rbi_rates.refresh(

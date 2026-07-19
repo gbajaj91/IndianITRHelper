@@ -10,6 +10,39 @@ from unittest.mock import MagicMock
 
 import pytest
 from parser.demat.etrade import etrade_benefit_history_parser
+from models.org import Organization
+from utils import ticker_mapping
+
+KNOWN_TICKERS = {"adbe"}
+
+
+def _fake_get_currency(ticker: str) -> str:
+    ticker = ticker.lower()
+    if ticker not in KNOWN_TICKERS:
+        raise AssertionError(f"No data returned from yfinance for ticker '{ticker}'")
+    return "USD"
+
+
+def _fake_get_org_info(ticker: str) -> Organization:
+    ticker = ticker.lower()
+    if ticker not in KNOWN_TICKERS:
+        raise AssertionError(f"No data returned from yfinance for ticker '{ticker}'")
+    return Organization(
+        name=f"{ticker.upper()} Inc.",
+        address="1 Test Street",
+        country_name="United States",
+        country_code="2",
+        zip_code="00000",
+        nature="Listed",
+    )
+
+
+@pytest.fixture(autouse=True)
+def fake_ticker_mapping(monkeypatch):
+    # ticker_mapping fetches from yfinance over the network and caches to
+    # disk - tests must never depend on network access.
+    monkeypatch.setattr(ticker_mapping, "get_currency", _fake_get_currency)
+    monkeypatch.setattr(ticker_mapping, "get_org_info", _fake_get_org_info)
 
 
 @pytest.fixture(name="benefit_history_excel_file_with_no_purchase_espp")
@@ -30,7 +63,10 @@ def fixture_benefit_history_excel_file_with_vested_and_released_espp():
             "Record Type": ["Purchase", "Event", "Event"],
             "Symbol": ["ADBE", "", ""],
             "Purchase Date": ["30-JUN-2020", "", ""],
+            "Purchased Qty.": ["2", None, None],
             "Sellable Qty.": ["2", None, None],
+            "Event Type": [None, "Deposit", "Withdrawal"],
+            "Date": [None, "07/01/2020", "07/02/2020"],
             "Qty. or Amount": [None, 0.5, 0.5],
             "Purchase Date FMV": ["$435.31", None, None],
         }

@@ -1,7 +1,6 @@
 import operator
 from utils.runtime_utils import warn_missing_module
-from utils import logger, file_utils, date_utils, share_data_utils
-from utils.ticker_mapping import ticker_currency_info
+from utils import logger, file_utils, date_utils, share_data_utils, ticker_mapping
 
 warn_missing_module("pandas")
 import pandas as pd
@@ -16,6 +15,7 @@ from models.purchase import Purchase, Price
 
 ESPP_SHEET_NAME = "ESPP"
 RSU_SHEET_NAME = "Restricted Stock"
+SALE_EVENT_TYPE = "Sale"
 
 
 def parse_espp_row(data: pd.Series) -> t.Optional[Purchase]:
@@ -24,10 +24,16 @@ def parse_espp_row(data: pd.Series) -> t.Optional[Purchase]:
             date=date_utils.parse_named_mon(data["Purchase Date"]),
             purchase_fmv=Price(
                 float(data["Purchase Date FMV"][1:]),
-                ticker_currency_info[data["Symbol"].lower()],
+                ticker_mapping.get_currency(data["Symbol"].lower()),
             ),
-            quantity=float(data["Sellable Qty."]),
+            # "Purchased Qty." is the quantity originally purchased on this
+            # date. "Sellable Qty." is a live balance - it drops (often to 0
+            # for old purchases) once shares are later sold - so it's tracked
+            # separately as closing_quantity, not used as the original qty.
+            quantity=float(data["Purchased Qty."]),
             ticker=data["Symbol"].lower(),
+            holding_type="ESPP",
+            closing_quantity=float(data["Sellable Qty."]),
         )
     return None
 
@@ -37,11 +43,31 @@ def parse_espp(
 ) -> t.List[Purchase]:
     logger.debug_log(f"Currently parsing {ESPP_SHEET_NAME} sheet")
     sheet_pd = xl.parse(sheet_name=ESPP_SHEET_NAME, skiprows=0, header=0)
-    purchases = []
+    purchases: t.List[Purchase] = []
+    pending_purchase: t.Optional[Purchase] = None
+    last_sale_date_in_millis: t.Optional[int] = None
+
+    def finalize_pending():
+        if pending_purchase is None:
+            return
+        # Only meaningful when fully sold (Sellable Qty. = 0) - whether that
+        # sale falls before/within/after the reporting period is decided
+        # downstream in faa3_parser, which knows the period boundaries.
+        if pending_purchase.closing_quantity == 0:
+            pending_purchase.last_sale_date_in_millis = last_sale_date_in_millis
+        purchases.append(pending_purchase)
+
     for _, data in sheet_pd.iterrows():
-        parsed_purchase = parse_espp_row(data)
-        if parsed_purchase is not None:
-            purchases.append(parsed_purchase)
+        if data["Record Type"] == "Purchase":
+            finalize_pending()
+            pending_purchase = parse_espp_row(data)
+            last_sale_date_in_millis = None
+        elif data["Record Type"] == "Event" and data["Event Type"] == SALE_EVENT_TYPE:
+            sale_date_in_millis = date_utils.parse_mm_dd(data["Date"])["time_in_millis"]
+            if last_sale_date_in_millis is None or sale_date_in_millis > last_sale_date_in_millis:
+                last_sale_date_in_millis = sale_date_in_millis
+
+    finalize_pending()
     return purchases
 
 
@@ -55,10 +81,11 @@ def parse_rsu_row(data: pd.Series, ticker: str) -> t.Optional[Purchase]:
                     ticker_in_lower,
                     date_utils.parse_mm_dd(data["Date"])["time_in_millis"],
                 ),
-                ticker_currency_info[ticker_in_lower],
+                ticker_mapping.get_currency(ticker_in_lower),
             ),
             quantity=data["Qty. or Amount"],
             ticker=ticker_in_lower,
+            holding_type="RSU",
         )
     return None
 
@@ -80,13 +107,33 @@ def parse_rsu(
             ):
                 continue
             assert current_ticker is not None, (
-                f"There is RSU event({data["Event Type"]}) without Grant event(which contains the ticker info)"
+                f'There is RSU event({data["Event Type"]}) without Grant event(which contains the ticker info)'
                 + f" hence no ticker info is found while parsing {RSU_SHEET_NAME}"
             )
             parsed_purchase = parse_rsu_row(data, current_ticker)
             if parsed_purchase is not None:
                 purchases.append(parsed_purchase)
     return purchases
+
+
+def extract_tickers(input_file_abs_path: str) -> t.Set[str]:
+    """Distinct tickers referenced by ESPP Purchase rows and RSU Grant rows,
+    so callers can refresh historic share price/rate data for exactly the
+    tickers this file needs."""
+    tickers: t.Set[str] = set()
+    with pd.ExcelFile(input_file_abs_path, engine="openpyxl") as xl:
+        sheet_names = xl.sheet_names
+        if ESPP_SHEET_NAME in sheet_names:
+            sheet_pd = xl.parse(sheet_name=ESPP_SHEET_NAME, skiprows=0, header=0)
+            for _, data in sheet_pd.iterrows():
+                if data["Record Type"] == "Purchase":
+                    tickers.add(data["Symbol"].lower())
+        if RSU_SHEET_NAME in sheet_names:
+            sheet_pd = xl.parse(sheet_name=RSU_SHEET_NAME, skiprows=0, header=0)
+            for _, data in sheet_pd.iterrows():
+                if data["Record Type"] == "Grant":
+                    tickers.add(data["Symbol"].lower())
+    return tickers
 
 
 def parse(

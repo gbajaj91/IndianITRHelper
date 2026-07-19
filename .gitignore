@@ -3,10 +3,7 @@ output
 *.xlsx
 *.xls
 *.csv
-!rates.xlsx
-!rates.xls
-!data.csv
-!sample_benifit_history.xlsx
+historic_data/
 
 *.pyc
 

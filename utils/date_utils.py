@@ -81,6 +81,14 @@ def parse_yyyy_mm_dd(date_str) -> DateObj:
     return __create_date_object(date_time, date_str)
 
 
+def parse_m_d_yy(date_str: str) -> DateObj:
+    """
+    Parses formats like 11/7/25 (Schwab transaction export dates) in time from epoch in milliseconds
+    """
+    date_time = datetime.strptime(date_str, "%m/%d/%y")
+    return __create_date_object(date_time, date_str)
+
+
 def last_work_day_in_ms(time_in_ms: int) -> int:
     """
     Returns the last working Friday in case time_in_ms is Sat or Sun

@@ -1,7 +1,6 @@
 import operator
 from utils.runtime_utils import warn_missing_module
-from utils.ticker_mapping import ticker_currency_info
-from utils import logger, file_utils, date_utils
+from utils import logger, file_utils, date_utils, ticker_mapping
 
 warn_missing_module("pandas")
 warn_missing_module("openpyxl")
@@ -28,10 +27,12 @@ def parse_sellable_row(data: pd.Series) -> t.Optional[Purchase]:
         date=date_utils.parse_named_mon(data["Date Acquired"]),
         purchase_fmv=Price(
             float(data["Purchase Date FMV"][1:]),
-            ticker_currency_info[data["Symbol"].lower()],
+            ticker_mapping.get_currency(data["Symbol"].lower()),
         ),
         quantity=data["Sellable Qty."],
         ticker=data["Symbol"].lower(),
+        # This sheet doesn't distinguish RSU vs ESPP sellable positions.
+        holding_type="ETrade Holding",
     )
 
 
@@ -44,6 +45,20 @@ def parse_sellable(xl: pd.ExcelFile) -> t.List[Purchase]:
         if parsed_purchase is not None:
             purchases.append(parsed_purchase)
     return purchases
+
+
+def extract_tickers(input_file_abs_path: str) -> t.Set[str]:
+    """Distinct tickers referenced by the Sellable sheet, so callers can
+    refresh historic share price/rate data for exactly the tickers this file
+    needs."""
+    tickers: t.Set[str] = set()
+    with pd.ExcelFile(input_file_abs_path, engine="openpyxl") as xl:
+        if SELLABLE_SHEET_NAME in xl.sheet_names:
+            sheet_pd = xl.parse(sheet_name=SELLABLE_SHEET_NAME, skiprows=0, header=0)
+            for _, data in sheet_pd.iterrows():
+                if isinstance(data["Symbol"], str) and data["Symbol"]:
+                    tickers.add(data["Symbol"].lower())
+    return tickers
 
 
 def parse(input_file_abs_path: str, output_folder_abs_path: str) -> t.List[Purchase]:

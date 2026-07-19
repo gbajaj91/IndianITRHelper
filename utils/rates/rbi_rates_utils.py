@@ -68,20 +68,42 @@ def __init_map(currency_code: str) -> RbiYearMonthRateMap:
     return rate_map_cache[currency_code]
 
 
+def __earliest_available(rbi_year_month_rate_map: RbiYearMonthRateMap) -> t.Tuple[int, int]:
+    year_months = [
+        (year, month)
+        for year, months in rbi_year_month_rate_map.items()
+        for month in months
+    ]
+    return min(year_months)
+
+
 def get_rate_at_month(currency_code: str, month: int, year: int) -> float:
     rbi_year_month_rate_map = __init_map(currency_code)
     rate_excel_path = os.path.join("historic_data", "rates", "rbi", "rates.xls")
-    if year not in rbi_year_month_rate_map:
-        raise ValueError(
-            f"No rbi data for currency code {currency_code} in {rate_excel_path} for year {year}"
-        )
-    rbi_month_rate_map = rbi_year_month_rate_map[year]
-    if month not in rbi_month_rate_map:
+    if year not in rbi_year_month_rate_map or month not in rbi_year_month_rate_map.get(
+        year, {}
+    ):
+        earliest_year, earliest_month = __earliest_available(rbi_year_month_rate_map)
+        if (year, month) < (earliest_year, earliest_month):
+            # FBIL reference rates are only published from a fixed start date
+            # (currently 2018-07-10) - a purchase older than that has no true
+            # historical rate to look up. Fall back to the earliest available
+            # rate as an approximation rather than failing the whole run.
+            logger.log(
+                f"No RBI rate data for currency {currency_code} in {rate_excel_path} for "
+                f"{month}/{year} (earliest available is {earliest_month}/{earliest_year}); "
+                "using the earliest available rate as an approximation."
+            )
+            return rbi_year_month_rate_map[earliest_year][earliest_month]["rate"]
+        if year not in rbi_year_month_rate_map:
+            raise ValueError(
+                f"No rbi data for currency code {currency_code} in {rate_excel_path} for year {year}"
+            )
         raise ValueError(
             f"No rbi data for currency code {currency_code} in {rate_excel_path} \
 for month {month}/{year}"
         )
-    return rbi_month_rate_map[month]["rate"]
+    return rbi_year_month_rate_map[year][month]["rate"]
 
 
 def get_rate_for_prev_mon_for_time_in_ms(currency_code: str, time_in_ms: int) -> float:

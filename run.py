@@ -3,6 +3,7 @@ import argparse
 import os
 import sys
 
+import time
 from datetime import date, timedelta
 
 from parser.demat.etrade import etrade_benefit_history_parser
@@ -20,6 +21,7 @@ default_output_folder_abs_path = os.path.join(script_path, DEFAULT_OUTPUT_FOLDER
 DEFAULT_SOURCE_MODE = "etrade_benefit_history"
 DEFAULT_CALENDER_MODE = "calendar"
 DEFAULT_REPORT = "fa"
+SHARE_PRICE_REFRESH_THROTTLE_SECONDS = 24 * 60 * 60
 
 
 def main():
@@ -190,6 +192,14 @@ def main():
         )
 
 
+def _share_data_path(ticker: str) -> str:
+    return os.path.join(script_path, "historic_data", "shares", ticker.lower(), "data.csv")
+
+
+def _refreshed_recently(path: str, max_age_seconds: int) -> bool:
+    return os.path.exists(path) and (time.time() - os.path.getmtime(path)) < max_age_seconds
+
+
 def refresh_historic_data(tickers):
     """Best-effort refresh of historic share prices and RBI/FBIL reference rates
     for every ticker found in the input file. Failures (missing dependency, no
@@ -198,6 +208,13 @@ def refresh_historic_data(tickers):
     end = (date.today() + timedelta(days=1)).isoformat()
     tickers = sorted(tickers)
     for ticker in tickers:
+        data_path = _share_data_path(ticker)
+        if _refreshed_recently(data_path, SHARE_PRICE_REFRESH_THROTTLE_SECONDS):
+            logger.log(
+                f"Skipping share price refresh for {ticker}; {data_path} was "
+                "refreshed within the last 24 hours."
+            )
+            continue
         try:
             refresh(ticker, DEFAULT_START, end)
         except SystemExit as err:

@@ -58,6 +58,45 @@ def test_only_events_within_fy_are_included(tmp_path):
     assert float(rows[0]["Gross dividend (native)"]) == 3.18
 
 
+def test_single_payment_rate_matches_the_actual_conversion_rate(tmp_path):
+    dividend = _mk("30-JUN-2025", "gs", 4.50)
+    dividend_income_parser.parse([dividend], [], 2026, str(tmp_path))
+
+    rows = _read_rows(tmp_path)
+    expected_rate = dividend_income_parser._to_inr(dividend) / dividend.amount
+    assert abs(float(rows[0]["USD conversion rate"]) - expected_rate) < 0.0001
+
+
+def test_multiple_payments_produce_a_weighted_average_rate(tmp_path):
+    # Two payments on different dates likely have different conversion rates
+    # - the reported rate is the effective one that reproduces the INR total
+    # from the native total (gross_inr / gross_native), not any single
+    # payment's own rate.
+    dividends = [
+        _mk("30-JUN-2025", "gs", 4.50),
+        _mk("31-DEC-2025", "gs", 4.50),
+    ]
+    dividend_income_parser.parse(dividends, [], 2026, str(tmp_path))
+
+    rows = _read_rows(tmp_path)
+    gross_native = float(rows[0]["Gross dividend (native)"])
+    gross_inr = float(rows[0]["Gross dividend (INR)"])
+    reported_rate = float(rows[0]["USD conversion rate"])
+    assert abs(gross_native * reported_rate - gross_inr) < 1
+
+
+def test_tax_withheld_inr_still_uses_its_own_actual_rate(tmp_path):
+    # There's no separate displayed rate column for tax, but its INR value
+    # must still be computed using its own event's actual conversion rate,
+    # not the dividend's rate.
+    tax = _mk("30-JUN-2025", "gs", 1.13)
+    dividend_income_parser.parse([], [tax], 2026, str(tmp_path))
+
+    rows = _read_rows(tmp_path)
+    expected_tax_inr = round(dividend_income_parser._to_inr(tax))
+    assert float(rows[0]["Tax withheld (INR)"]) == expected_tax_inr
+
+
 def test_no_events_produces_empty_report(tmp_path):
     dividend_income_parser.parse([], [], 2026, str(tmp_path))
     assert _read_rows(tmp_path) == []

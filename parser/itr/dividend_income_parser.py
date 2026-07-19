@@ -22,6 +22,7 @@ DIVIDEND_INCOME_HEADER = [
     "Currency",
     "Gross dividend (native)",
     "Tax withheld (native)",
+    "USD conversion rate",
     "Gross dividend (INR)",
     "Tax withheld (INR)",
     "Net dividend (INR)",
@@ -69,12 +70,21 @@ def parse(
         gross_inr = sum(_to_inr(d) for d in ticker_dividends)
         tax_inr = sum(_to_inr(t_) for t_ in ticker_tax)
 
+        # A ticker can have multiple dividend payments on different dates,
+        # each at its own RBI rate - this is the effective (amount-weighted)
+        # rate that reproduces the INR total from the native total, i.e.
+        # inr/native. With a single payment it's just that payment's actual
+        # rate. Tax withheld still uses each event's own actual rate
+        # internally (tax_inr above), just not shown as a separate column.
+        dividend_rate = gross_inr / gross_native if gross_native else 0
+
         rows.append(
             (
                 ticker,
                 currency,
                 round(gross_native, 2),
                 round(tax_native, 2),
+                round(dividend_rate, 4),
                 round(gross_inr),
                 round(tax_inr),
                 round(gross_inr - tax_inr),

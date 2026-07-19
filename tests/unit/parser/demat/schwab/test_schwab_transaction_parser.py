@@ -145,3 +145,47 @@ def test_time_bounds_excludes_out_of_range_transactions(tmp_path):
 
     assert len(purchases) == 1
     assert purchases[0].date["orig_disp_time"] == "10/3/25"
+
+
+DIVIDEND_ROWS = [
+    "3/30/26,NRA Tax Adj,GS,GOLDMAN SACHS GROUP INC,,,,($1.13),,,,,,",
+    "3/30/26,Qualified Div,GS,GOLDMAN SACHS GROUP INC,,,,$4.50 ,,,,,,",
+    "3/26/26,NRA Tax Adj,V,VISA INC CLASS A,,,,($0.17),,,,,,",
+    "3/26/26,Qualified Div,V,VISA INC CLASS A,,,,$0.67 ,,,,,,",
+    "12/31/25,NRA Tax Adj,QQQ,INVSC QQQ TRUST SRS 1 ETF,,,,($0.80),,,,,,",
+    "12/31/25,Cash Dividend,QQQ,INVSC QQQ TRUST SRS 1 ETF,,,,$3.18 ,,,,,,",
+    "12/30/25,NRA Tax Adj,,SCHWAB1 INT 11/26-12/29,,,,($0.02),,,,,,",
+    "12/30/25,Credit Interest,,SCHWAB1 INT 11/26-12/29,,,,$0.15 ,,,,,,",
+]
+
+
+def test_parse_dividends_separates_dividends_and_tax(tmp_path):
+    csv_path = write_csv(tmp_path, DIVIDEND_ROWS)
+    dividends, tax_withheld = schwab_transaction_parser.parse_dividends(csv_path)
+
+    assert {(d.ticker, d.amount) for d in dividends} == {
+        ("gs", 4.50),
+        ("v", 0.67),
+        ("qqq", 3.18),
+    }
+    assert {(t.ticker, t.amount) for t in tax_withheld} == {
+        ("gs", 1.13),
+        ("v", 0.17),
+        ("qqq", 0.80),
+    }
+
+
+def test_parse_dividends_excludes_interest_tax_adjustment(tmp_path):
+    # The NRA Tax Adj row with a blank Symbol is against interest, not a
+    # dividend - it must not show up as tax withheld for any ticker.
+    csv_path = write_csv(tmp_path, DIVIDEND_ROWS)
+    _, tax_withheld = schwab_transaction_parser.parse_dividends(csv_path)
+
+    assert all(t.ticker for t in tax_withheld)
+    assert len(tax_withheld) == 3
+
+
+def test_extract_tickers_includes_dividend_only_tickers(tmp_path):
+    csv_path = write_csv(tmp_path, DIVIDEND_ROWS)
+    tickers = schwab_transaction_parser.extract_tickers(csv_path)
+    assert tickers == {"gs", "v", "qqq"}

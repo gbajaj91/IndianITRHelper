@@ -5,6 +5,7 @@ import operator
 from utils import date_utils, share_data_utils, file_utils, ticker_mapping
 from utils.rates import rbi_rates_utils
 from models.purchase import Purchase, Price
+from models.dividend import DividendEvent
 from models.itr.faa3 import FAA3
 
 
@@ -13,12 +14,22 @@ def parse_org_purchases(
     calendar_mode: str,
     purchases: t.List[Purchase],
     assessment_year: int,
+    dividends: t.Optional[t.List[DividendEvent]] = None,
 ) -> t.Tuple[t.List[FAA3], t.List[FAA3]]:
     start_time_in_ms, end_time_in_ms = date_utils.calendar_range(
         calendar_mode, assessment_year
     )
     org = ticker_mapping.get_org_info(ticker)
     currency_code = ticker_mapping.get_currency(ticker)
+
+    dividend_income_inr = sum(
+        dividend.amount
+        * rbi_rates_utils.get_rate_for_prev_mon_for_time_in_ms(
+            currency_code, dividend.date["time_in_millis"]
+        )
+        for dividend in (dividends or [])
+        if start_time_in_ms <= dividend.date["time_in_millis"] <= end_time_in_ms
+    )
 
     def is_not_reportable(purchase: Purchase) -> bool:
         # Fully sold, and that sale happened before this reporting period
@@ -215,6 +226,12 @@ def parse_org_purchases(
     for purchase in after_purchases:
         fa_entries.append(build_entry(purchase))
 
+    # Dividend income isn't tied to any specific lot, so it's placed on just
+    # the first fa_entries row for this ticker rather than every row - that
+    # way summing the column still gives the right total, not an inflated one.
+    if fa_entries and dividend_income_inr:
+        fa_entries[0].dividend_income = dividend_income_inr
+
     return fa_entries, detailed_entries
 
 
@@ -247,7 +264,7 @@ def _fa_entry_row(entry: FAA3) -> tuple:
         round(entry.purchase_price),
         round(entry.peak_price),
         round(entry.closing_price),
-        0,
+        round(entry.dividend_income),
         round(entry.sale_proceeds),
     )
 
@@ -318,26 +335,99 @@ def _transaction_row(entry: FAA3) -> tuple:
     )
 
 
+def _dividend_only_entry(
+    ticker: str,
+    calendar_mode: str,
+    assessment_year: int,
+    dividends: t.List[DividendEvent],
+) -> t.Optional[FAA3]:
+    """A ticker can have dividend income in the period with zero purchase
+    records in the input file (e.g. the original purchase predates the
+    exported date range). Rather than silently losing that dividend income,
+    emit a bare entry for it - no lot to value, so everything else is 0.
+    Returns None if this ticker has no dividend income within the period."""
+    start_time_in_ms, end_time_in_ms = date_utils.calendar_range(
+        calendar_mode, assessment_year
+    )
+    dividends_in_period = [
+        d
+        for d in dividends
+        if start_time_in_ms <= d.date["time_in_millis"] <= end_time_in_ms
+    ]
+    if not dividends_in_period:
+        return None
+
+    org = ticker_mapping.get_org_info(ticker)
+    currency_code = ticker_mapping.get_currency(ticker)
+    dividend_income_inr = sum(
+        d.amount
+        * rbi_rates_utils.get_rate_for_prev_mon_for_time_in_ms(
+            currency_code, d.date["time_in_millis"]
+        )
+        for d in dividends_in_period
+    )
+    placeholder_date = min(
+        (d.date for d in dividends_in_period), key=lambda d: d["time_in_millis"]
+    )
+    print(
+        f"{ticker}: No purchase record found in the input file, but "
+        f"{dividend_income_inr:.2f} INR of dividend income was received during "
+        "the period - reporting a dividend-only entry instead of dropping it."
+    )
+    return FAA3(
+        org,
+        purchase=Purchase(
+            placeholder_date,
+            Price(0, currency_code),
+            quantity=0,
+            ticker=ticker,
+        ),
+        purchase_price=0,
+        peak_price=0,
+        closing_price=0,
+        dividend_income=dividend_income_inr,
+        comment=(
+            "No purchase record for this ticker in the input file - "
+            "reporting dividend income only"
+        ),
+    )
+
+
 def parse(
     calendar_mode: str,
     purchases: t.List[Purchase],
     assessment_year: int,
     output_folder_abs_path: str,
+    dividends: t.Optional[t.List[DividendEvent]] = None,
 ):
     ticker_attr = operator.attrgetter("ticker")
     grouped_list = groupby(sorted(purchases, key=ticker_attr), ticker_attr)
 
+    dividends_by_ticker: t.Dict[str, t.List[DividendEvent]] = {}
+    for dividend in dividends or []:
+        dividends_by_ticker.setdefault(dividend.ticker, []).append(dividend)
+
     all_fa_entries: t.List[FAA3] = []
     all_detailed_entries: t.List[FAA3] = []
+    tickers_with_purchases = set()
     for ticker, each_org_purchases in grouped_list:
+        tickers_with_purchases.add(ticker)
         fa_entries, detailed_entries = parse_org_purchases(
             ticker,
             calendar_mode,
             list(each_org_purchases),
             assessment_year,
+            dividends_by_ticker.get(ticker),
         )
         all_fa_entries.extend(fa_entries)
         all_detailed_entries.extend(detailed_entries)
+
+    for ticker in sorted(set(dividends_by_ticker) - tickers_with_purchases):
+        entry = _dividend_only_entry(
+            ticker, calendar_mode, assessment_year, dividends_by_ticker[ticker]
+        )
+        if entry is not None:
+            all_fa_entries.append(entry)
 
     file_utils.write_to_file(
         output_folder_abs_path,

@@ -12,9 +12,16 @@ import pandas as pd
 DEBUG = False
 
 from models.purchase import Purchase, Price, Disposal
+from models.dividend import DividendEvent
 
 BUY_ACTION = "Buy"
 SELL_ACTION = "Sell"
+# Matches "Qualified Div", "Cash Dividend", "Special Dividend", "Non-Qualified
+# Div", etc. - Schwab's dividend-type Actions all contain "Div".
+DIVIDEND_ACTION_MARKER = "Div"
+# Tax withheld for non-resident-alien accounts. Also appears against interest
+# (blank Symbol) - only rows with a Symbol are dividend tax withholding.
+TAX_ACTION = "NRA Tax Adj"
 
 
 class _Lot:
@@ -32,9 +39,30 @@ def _parse_price(value: str) -> float:
     return float(str(value).replace("$", "").replace(",", "").strip())
 
 
+def _parse_amount(value: str) -> float:
+    """Parses the "Amount" column, which unlike "Price" can be negative,
+    written in parens e.g. "($1.13)". Returns the signed value."""
+    text = str(value).replace("$", "").replace(",", "").strip()
+    if text.startswith("(") and text.endswith(")"):
+        return -float(text[1:-1])
+    return float(text)
+
+
 def _read_transactions(input_file_abs_path: str) -> t.List[dict]:
     df = pd.read_csv(input_file_abs_path)
     df = df[df["Action"].isin([BUY_ACTION, SELL_ACTION])]
+    rows = df.to_dict("records")
+    rows.sort(key=lambda row: date_utils.parse_m_d_yy(row["Date"])["time_in_millis"])
+    return rows
+
+
+def _read_dividend_rows(input_file_abs_path: str) -> t.List[dict]:
+    df = pd.read_csv(input_file_abs_path)
+    is_dividend = df["Action"].str.contains(DIVIDEND_ACTION_MARKER, na=False)
+    # Symbol is blank for NRA Tax Adj against interest - only tax rows tied to
+    # an actual ticker are dividend tax withholding.
+    is_dividend_tax = (df["Action"] == TAX_ACTION) & df["Symbol"].notna()
+    df = df[is_dividend | is_dividend_tax]
     rows = df.to_dict("records")
     rows.sort(key=lambda row: date_utils.parse_m_d_yy(row["Date"])["time_in_millis"])
     return rows
@@ -107,10 +135,37 @@ def _net_fifo(
 
 
 def extract_tickers(input_file_abs_path: str) -> t.Set[str]:
-    """Distinct tickers referenced by Buy/Sell rows, so callers can refresh
-    historic share price/rate data for exactly the tickers this file needs."""
+    """Distinct tickers referenced by Buy/Sell/dividend/tax rows, so callers
+    can refresh historic share price/rate data for exactly the tickers this
+    file needs."""
     rows = _read_transactions(input_file_abs_path)
-    return {row["Symbol"].strip().lower() for row in rows}
+    dividend_rows = _read_dividend_rows(input_file_abs_path)
+    return {row["Symbol"].strip().lower() for row in rows} | {
+        row["Symbol"].strip().lower() for row in dividend_rows
+    }
+
+
+def parse_dividends(
+    input_file_abs_path: str,
+) -> t.Tuple[t.List[DividendEvent], t.List[DividendEvent]]:
+    """Returns (dividends, tax_withheld) - both are per-ticker cash events,
+    not tied to any specific lot. Matched to each other only by ticker (not
+    date), since a tax withholding posting isn't guaranteed to land on the
+    same date as the dividend it applies to."""
+    rows = _read_dividend_rows(input_file_abs_path)
+    dividends: t.List[DividendEvent] = []
+    tax_withheld: t.List[DividendEvent] = []
+    for row in rows:
+        ticker = row["Symbol"].strip().lower()
+        date_obj = date_utils.parse_m_d_yy(row["Date"])
+        amount = _parse_amount(row["Amount"])
+        currency = ticker_mapping.get_currency(ticker)
+        event = DividendEvent(date_obj, ticker, abs(amount), currency)
+        if row["Action"] == TAX_ACTION:
+            tax_withheld.append(event)
+        else:
+            dividends.append(event)
+    return dividends, tax_withheld
 
 
 def parse(

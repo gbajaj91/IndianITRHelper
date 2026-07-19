@@ -31,3 +31,7 @@ class FAA3:
     # Explains why a value was zeroed out (not reportable this period) or
     # why it's included despite being fully sold. Blank when not applicable.
     comment: str = ""
+    # Total dividend income (INR) for this ticker during the reporting
+    # period. Not tied to any specific lot, so it's only set on one FAA3
+    # entry per ticker (to avoid double-counting if the column is summed).
+    dividend_income: float = 0

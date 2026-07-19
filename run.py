@@ -9,7 +9,7 @@ from parser.demat.etrade import etrade_benefit_history_parser
 from utils import logger, date_utils, ticker_mapping
 from parser.demat.etrade import etrade_holdings_bystatus_parser
 from parser.demat.schwab import schwab_transaction_parser
-from parser.itr import faa3_parser, capital_gains_parser
+from parser.itr import faa3_parser, capital_gains_parser, dividend_income_parser
 from refresh_historic_data import refresh, DEFAULT_START
 import refresh_rbi_rates
 
@@ -69,10 +69,12 @@ def main():
         action="store",
         default=DEFAULT_REPORT,
         dest="report",
-        choices=[DEFAULT_REPORT, "capital_gains"],
+        choices=[DEFAULT_REPORT, "capital_gains", "dividend_income"],
         help="Specify the report to generate: 'fa' for Schedule FA section A3 "
-        "(fa_entries.csv/transactions.csv), or 'capital_gains' for an LTCG/STCG "
-        f"capital gains report scoped to the financial year (capital_gains.csv), default = {DEFAULT_REPORT}",
+        "(fa_entries.csv/transactions.csv), 'capital_gains' for an LTCG/STCG "
+        "capital gains report scoped to the financial year (capital_gains.csv), or "
+        "'dividend_income' for gross dividends/tax withheld per ticker scoped to the "
+        f"financial year (dividend_income.csv), default = {DEFAULT_REPORT}",
     )
     parser.add_argument(
         "-ay",
@@ -126,13 +128,22 @@ def main():
     if not args.skip_refresh:
         refresh_historic_data(tickers)
 
-    # Capital gains is always reported on a financial-year basis in India,
-    # independent of --calendar-mode (which only governs the Schedule FA
-    # report) - so the parsing-stage cutoff must follow the report being
-    # generated, not the (possibly irrelevant) --calendar-mode flag.
+    # Capital gains and dividend income are always reported on a
+    # financial-year basis in India, independent of --calendar-mode (which
+    # only governs the Schedule FA report) - so the parsing-stage cutoff
+    # must follow the report being generated, not the (possibly irrelevant)
+    # --calendar-mode flag.
     parsing_calendar_mode = (
-        "financial" if args.report == "capital_gains" else args.calendar_mode
+        "financial"
+        if args.report in ("capital_gains", "dividend_income")
+        else args.calendar_mode
     )
+
+    dividends, tax_withheld = [], []
+    if args.source_mode == "schwab_transactions":
+        dividends, tax_withheld = schwab_transaction_parser.parse_dividends(
+            args.input_excel_file
+        )
 
     if args.source_mode == "etrade_holdings_bystatus":
         purchases = etrade_holdings_bystatus_parser.parse(
@@ -165,9 +176,17 @@ def main():
         capital_gains_parser.parse(
             purchases, args.assessment_year, output_folder_abs_path
         )
+    elif args.report == "dividend_income":
+        dividend_income_parser.parse(
+            dividends, tax_withheld, args.assessment_year, output_folder_abs_path
+        )
     else:
         faa3_parser.parse(
-            args.calendar_mode, purchases, args.assessment_year, output_folder_abs_path
+            args.calendar_mode,
+            purchases,
+            args.assessment_year,
+            output_folder_abs_path,
+            dividends=dividends,
         )
 
 

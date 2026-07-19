@@ -8,7 +8,7 @@ def test_espp_parsing_with_no_purchase(
     benefit_history_excel_file_with_no_purchase_espp: pd.ExcelFile,
 ):
     espp_purchase = etrade_benefit_history_parser.parse_espp(
-        benefit_history_excel_file_with_no_purchase_espp
+        benefit_history_excel_file_with_no_purchase_espp, None
     )
     assert len(espp_purchase) == 0
 
@@ -116,7 +116,7 @@ def test_espp_parsing_with_only_released_shares(
     benefit_history_excel_file_with_vested_and_released_espp: pd.ExcelFile,
 ):
     espp_purchases = etrade_benefit_history_parser.parse_espp(
-        benefit_history_excel_file_with_vested_and_released_espp
+        benefit_history_excel_file_with_vested_and_released_espp, None
     )
     assert len(espp_purchases) == 1
     espp_purchase = espp_purchases[0]

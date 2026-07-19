@@ -9,7 +9,7 @@ def test_rsu_parsing_with_only_vest(
     benefit_history_excel_file_with_vested_rsu: pd.ExcelFile,
 ):
     rsu_purchase = etrade_benefit_history_parser.parse_rsu(
-        benefit_history_excel_file_with_vested_rsu
+        benefit_history_excel_file_with_vested_rsu, None
     )
     assert len(rsu_purchase) == 0
 
@@ -18,7 +18,7 @@ def test_rsu_parsing_with_only_released_shares(
     benefit_history_excel_file_with_vested_and_released_rsu: pd.ExcelFile,
 ):
     rsu_purchases = etrade_benefit_history_parser.parse_rsu(
-        benefit_history_excel_file_with_vested_and_released_rsu
+        benefit_history_excel_file_with_vested_and_released_rsu, None
     )
     assert len(rsu_purchases) == 1
     rsu_purchase = rsu_purchases[0]
@@ -42,9 +42,9 @@ def test_wrong_rsu_sheet_without_grant():
         }
     )
     with pytest.raises(AssertionError) as error:
-        etrade_benefit_history_parser.parse_rsu(rsu_sheet)
+        etrade_benefit_history_parser.parse_rsu(rsu_sheet, None)
     assert (
-        "There is RSU event without Grant event(which contains the ticker info) "
+        "There is RSU event(Shares released) without Grant event(which contains the ticker info) "
         + "hence no ticker info is found while parsing Restricted Stock"
         in str(error.value)
     )

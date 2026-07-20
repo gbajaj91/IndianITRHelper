@@ -55,6 +55,10 @@ CAPITAL_GAINS_HEADER = [
     "Currency",
     "Purchase RBI rate",
     "Sale RBI rate",
+    "Total purchase value (native)",
+    "Total sale value (native)",
+    "Total purchase value (INR)",
+    "Total sale value (INR)",
     "Gain/Loss (native)",
     "Gain/Loss (INR)",
 ]
@@ -95,8 +99,10 @@ def _rows_for_purchase(
         )
         cost_basis_native = disposal.quantity * purchase.purchase_fmv.price
         proceeds_native = disposal.quantity * disposal.price
+        cost_basis_inr = cost_basis_native * purchase_rate
+        proceeds_inr = proceeds_native * sale_rate
         gain_native = proceeds_native - cost_basis_native
-        gain_inr = (proceeds_native * sale_rate) - (cost_basis_native * purchase_rate)
+        gain_inr = proceeds_inr - cost_basis_inr
 
         rows.append(
             (
@@ -112,6 +118,10 @@ def _rows_for_purchase(
                 currency_code,
                 purchase_rate,
                 sale_rate,
+                round(cost_basis_native, 2),
+                round(proceeds_native, 2),
+                round(cost_basis_inr),
+                round(proceeds_inr),
                 round(gain_native, 2),
                 round(gain_inr),
             )

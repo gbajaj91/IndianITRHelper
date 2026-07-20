@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from parser.demat.etrade import etrade_benefit_history_parser
 from utils import logger, date_utils, ticker_mapping
 from parser.demat.etrade import etrade_holdings_bystatus_parser
+from parser.demat.etrade import etrade_gains_losses_parser
 from parser.demat.schwab import schwab_transaction_parser
 from parser.itr import faa3_parser, capital_gains_parser, dividend_income_parser
 from refresh_historic_data import refresh, DEFAULT_START
@@ -43,7 +44,8 @@ def main():
         action="store",
         dest="input_excel_file",
         help="Specify the absolute path for the input file: benefit history(BenefitHistory.xlsx) "
-        "Excel file for etrade source modes, or the transactions CSV export for schwab_transactions",
+        "Excel file for etrade source modes (including etrade_gains_losses, where it's the "
+        "source of every trade), or the transactions CSV export for schwab_transactions",
         required=True,
     )
     parser.add_argument(
@@ -52,8 +54,23 @@ def main():
         action="store",
         default=DEFAULT_SOURCE_MODE,
         dest="source_mode",
-        choices=[f"{DEFAULT_SOURCE_MODE}", "etrade_holdings_bystatus", "schwab_transactions"],
+        choices=[
+            f"{DEFAULT_SOURCE_MODE}",
+            "etrade_holdings_bystatus",
+            "schwab_transactions",
+            "etrade_gains_losses",
+        ],
         help=f"Specify the source mode, default = {DEFAULT_SOURCE_MODE}",
+    )
+    parser.add_argument(
+        "--gains-losses-file",
+        action="store",
+        dest="gains_losses_file",
+        default=None,
+        help="Required with -m etrade_gains_losses: absolute path to ETRADE's Gains & "
+        "Losses Expanded report (CSV or XLSX). Every trade comes from -i's "
+        "BenefitHistory.xlsx; this file is only used to look up each sold lot's actual "
+        "sale quantity/price/date.",
     )
     parser.add_argument(
         "-cal",
@@ -117,11 +134,19 @@ def main():
     etrade_benefit_history_parser.DEBUG = args.debug
     etrade_holdings_bystatus_parser.DEBUG = args.debug
     schwab_transaction_parser.DEBUG = args.debug
+    etrade_gains_losses_parser.DEBUG = args.debug
+
+    if args.source_mode == "etrade_gains_losses" and not args.gains_losses_file:
+        parser.error("--gains-losses-file is required when -m etrade_gains_losses")
 
     if args.source_mode == "etrade_holdings_bystatus":
         tickers = etrade_holdings_bystatus_parser.extract_tickers(args.input_excel_file)
     elif args.source_mode == "schwab_transactions":
         tickers = schwab_transaction_parser.extract_tickers(args.input_excel_file)
+    elif args.source_mode == "etrade_gains_losses":
+        tickers = etrade_gains_losses_parser.extract_tickers(
+            args.input_excel_file, args.gains_losses_file
+        )
     else:
         tickers = etrade_benefit_history_parser.extract_tickers(args.input_excel_file)
 
@@ -154,6 +179,18 @@ def main():
     elif args.source_mode == "schwab_transactions":
         purchases = schwab_transaction_parser.parse(
             args.input_excel_file,
+            output_folder_abs_path,
+            time_bounds=(
+                None,
+                date_utils.calendar_range(parsing_calendar_mode, args.assessment_year)[
+                    1
+                ],
+            ),
+        )
+    elif args.source_mode == "etrade_gains_losses":
+        purchases = etrade_gains_losses_parser.parse(
+            args.input_excel_file,
+            args.gains_losses_file,
             output_folder_abs_path,
             time_bounds=(
                 None,

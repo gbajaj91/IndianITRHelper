@@ -132,6 +132,31 @@ def test_stcg_and_ltcg_are_split_into_separate_sections(tmp_path, monkeypatch):
     assert float(ltcg_total_row["Gain/Loss (native)"]) == 250.0  # 5 * (150-100)
 
 
+def test_total_purchase_and_sale_values_reconcile_to_the_gain(tmp_path, monkeypatch):
+    monkeypatch.setattr(ticker_mapping, "get_currency", lambda ticker: "USD")
+    purchase = _mk_purchase(
+        "15-JUN-2025",
+        price=100.0,
+        disposals=[_mk_disposal("20-JAN-2026", 5, 150.0)],
+    )
+    capital_gains_parser.parse([purchase], 2026, str(tmp_path))
+
+    rows = _read_rows(tmp_path)
+    row = rows[0]
+    assert float(row["Total purchase value (native)"]) == 500.0  # 5 * 100
+    assert float(row["Total sale value (native)"]) == 750.0  # 5 * 150
+
+    native_gain = float(row["Total sale value (native)"]) - float(
+        row["Total purchase value (native)"]
+    )
+    assert native_gain == float(row["Gain/Loss (native)"])
+
+    inr_gain = round(
+        float(row["Total sale value (INR)"]) - float(row["Total purchase value (INR)"])
+    )
+    assert inr_gain == round(float(row["Gain/Loss (INR)"]))
+
+
 def test_espp_without_disposal_detail_is_skipped(tmp_path, monkeypatch):
     monkeypatch.setattr(ticker_mapping, "get_currency", lambda ticker: "USD")
     purchase = Purchase(

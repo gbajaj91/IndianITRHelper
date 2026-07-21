@@ -25,6 +25,10 @@ is a best-effort reconciliation, not a hard gate:
 - If more than one Sell row would otherwise represent the same disposal
   (same lot, same sale date, same quantity - e.g. a duplicate export row),
   the higher price is used rather than double-counting the quantity.
+- If more than one BenefitHistory lot shares the same (ticker, plan type,
+  acquisition date) - e.g. two RSU grants releasing shares the same day -
+  matched Sell rows are distributed across them FIFO rather than all being
+  attributed to whichever lot is encountered first.
 """
 
 import typing as t
@@ -111,6 +115,45 @@ def _dedupe_matches(matches: t.List[dict]) -> t.List[dict]:
     return list(by_date_and_qty.values())
 
 
+QUANTITY_EPSILON = 1e-6
+
+
+def _distribute_matches(group: t.List[Purchase], matches: t.List[dict]) -> None:
+    """Multiple BenefitHistory lots can share the same (ticker, plan type,
+    acquisition date) key - e.g. separate RSU grants that happen to release
+    shares on the same day. They're economically identical (RSU cost basis
+    is derived purely from the release date's market price, independent of
+    which grant it came from), so the matched Sell rows are distributed
+    across them FIFO - oldest lot first, splitting a Sell row's quantity
+    across lots if it doesn't fit in just one - rather than every match being
+    dumped onto whichever lot happens to be encountered first."""
+    matches = sorted(matches, key=lambda m: m["date_sold"]["time_in_millis"])
+    lots = iter(group)
+    current = next(lots, None)
+    remaining = current.quantity if current else 0.0
+    for match in matches:
+        qty_left = match["quantity"]
+        while qty_left > QUANTITY_EPSILON and current is not None:
+            take = min(qty_left, remaining)
+            if take > QUANTITY_EPSILON:
+                current.disposals.append(
+                    Disposal(match["date_sold"], take, match["price_per_share"])
+                )
+            qty_left -= take
+            remaining -= take
+            if remaining <= QUANTITY_EPSILON:
+                current = next(lots, None)
+                remaining = current.quantity if current else 0.0
+        if qty_left > QUANTITY_EPSILON:
+            logger.log(
+                f"Cross-check: {group[0].ticker} {group[0].holding_type} lot(s) "
+                f"acquired {group[0].date['disp_time']} - the Gains & Losses "
+                f"Expanded file claims more shares sold than BenefitHistory.xlsx "
+                f"shows acquired on that date ({qty_left:g} share(s) unaccounted "
+                "for)."
+            )
+
+
 def _attach_disposals(
     purchases: t.List[Purchase], gl_index: t.Dict[GlSellRowKey, t.List[dict]]
 ) -> None:
@@ -119,27 +162,40 @@ def _attach_disposals(
     disposals. Mutates gl_index, popping every key it consumes, so any keys
     left over afterwards are Sell rows that never matched a BenefitHistory
     lot - logged as a mismatch by the caller."""
+    groups: t.Dict[GlSellRowKey, t.List[Purchase]] = {}
     for purchase in purchases:
         key = (
             purchase.ticker,
             _plan_type_for(purchase.holding_type),
             purchase.date["time_in_millis"],
         )
+        groups.setdefault(key, []).append(purchase)
+
+    for key, group in groups.items():
         matches = gl_index.pop(key, None)
         if not matches:
-            if purchase.holding_type == "ESPP" and purchase.closing_quantity == 0:
-                logger.log(
-                    f"Cross-check: {purchase.ticker} ESPP lot acquired "
-                    f"{purchase.date['disp_time']} is fully sold per "
-                    "BenefitHistory.xlsx, but no matching Sell row was found in "
-                    "the Gains & Losses Expanded file - its gain can't be "
-                    "computed, so it's excluded from the capital gains report."
-                )
+            for purchase in group:
+                if purchase.holding_type == "ESPP" and purchase.closing_quantity == 0:
+                    logger.log(
+                        f"Cross-check: {purchase.ticker} ESPP lot acquired "
+                        f"{purchase.date['disp_time']} is fully sold per "
+                        "BenefitHistory.xlsx, but no matching Sell row was found "
+                        "in the Gains & Losses Expanded file - its gain can't be "
+                        "computed, so it's excluded from the capital gains report."
+                    )
             continue
-        for match in _dedupe_matches(matches):
-            purchase.disposals.append(
-                Disposal(match["date_sold"], match["quantity"], match["price_per_share"])
-            )
+        _distribute_matches(group, _dedupe_matches(matches))
+
+    # RSU lots have no other way to know they were (partly or fully) sold -
+    # BenefitHistory.xlsx doesn't track RSU sales at all - so once disposals
+    # are matched in, closing_quantity must be derived from them; otherwise
+    # it stays at its default of None, which faa3_parser treats as "still
+    # fully held". ESPP lots already carry their own closing_quantity from
+    # BenefitHistory's own "Sellable Qty." bookkeeping - left untouched.
+    for purchase in purchases:
+        if purchase.closing_quantity is None and purchase.disposals:
+            sold_quantity = sum(disposal.quantity for disposal in purchase.disposals)
+            purchase.closing_quantity = purchase.quantity - sold_quantity
 
 
 def _log_unmatched_sell_rows(gl_index: t.Dict[GlSellRowKey, t.List[dict]]) -> None:

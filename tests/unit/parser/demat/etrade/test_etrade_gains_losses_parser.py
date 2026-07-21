@@ -38,6 +38,20 @@ ESPP_ROW = (
 )
 
 
+def sell_row(symbol, plan_type, quantity, date_acquired, date_sold, total_proceeds):
+    """A minimal Sell row - only the fields _index_sell_rows actually reads
+    are set, the rest left blank."""
+    fields = [""] * 47
+    fields[0] = "Sell"
+    fields[1] = symbol
+    fields[2] = plan_type
+    fields[3] = str(quantity)
+    fields[4] = date_acquired
+    fields[12] = date_sold
+    fields[13] = total_proceeds
+    return ",".join(fields)
+
+
 def write_gl_csv(tmp_path, rows):
     csv_path = tmp_path / "gl.csv"
     csv_path.write_text("\n".join([HEADER] + rows) + "\n")
@@ -214,6 +228,56 @@ def test_duplicate_sell_rows_for_same_disposal_take_the_higher_price(tmp_path, m
     assert len(rsu.disposals) == 1
     assert rsu.disposals[0].quantity == 8.0
     assert abs(rsu.disposals[0].price - 3000.00 / 8) < 0.0001
+
+
+def test_sales_split_across_multiple_lots_sharing_the_same_acquisition_date(tmp_path):
+    # Two separate RSU grants both released shares on 04/15/2025 - a real
+    # BenefitHistory.xlsx scenario. Regression test: matched Sell rows used
+    # to all be attributed to whichever lot was encountered first, leaving
+    # the other lot(s) with no disposals at all (and thus $0 sale proceeds)
+    # even though they were, in fact, sold.
+    benefit_history_path = write_benefit_history(
+        tmp_path,
+        rsu_rows=[
+            {"Record Type": "Grant", "Symbol": "ADBE", "Event Type": None, "Date": None, "Qty. or Amount": None},
+            {"Record Type": "Event", "Symbol": None, "Event Type": "Shares released", "Date": "04/15/2025", "Qty. or Amount": 5.0},
+            {"Record Type": "Grant", "Symbol": "ADBE", "Event Type": None, "Date": None, "Qty. or Amount": None},
+            {"Record Type": "Event", "Symbol": None, "Event Type": "Shares released", "Date": "04/15/2025", "Qty. or Amount": 3.0},
+        ],
+        espp_rows=[],
+    )
+    # 8 shares total acquired on 04/15/2025 (5 + 3), sold across two separate
+    # transactions that don't align 1:1 with either lot: 6 on 04/20, 2 on
+    # 04/25.
+    gl_path = write_gl_csv(
+        tmp_path,
+        [
+            sell_row("ADBE", "RS", 6, "04/15/2025", "04/20/2025", "$600.00"),
+            sell_row("ADBE", "RS", 2, "04/15/2025", "04/25/2025", "$220.00"),
+        ],
+    )
+
+    purchases = etrade_gains_losses_parser.parse(
+        benefit_history_path, gl_path, str(tmp_path / "out"), None
+    )
+    rsu_lots = sorted(
+        (p for p in purchases if p.holding_type == "RSU"), key=lambda p: p.quantity
+    )
+    assert [lot.quantity for lot in rsu_lots] == [3.0, 5.0]
+
+    # Every lot ends up fully sold, and every share is accounted for -
+    # nothing dropped, nothing double-counted, nothing left stuck on the
+    # first lot encountered.
+    for lot in rsu_lots:
+        assert lot.closing_quantity == 0.0
+        assert sum(d.quantity for d in lot.disposals) == lot.quantity
+
+    total_sold = sum(d.quantity for lot in rsu_lots for d in lot.disposals)
+    assert total_sold == 8.0
+    total_proceeds = sum(
+        d.quantity * d.price for lot in rsu_lots for d in lot.disposals
+    )
+    assert abs(total_proceeds - 820.0) < 0.0001
 
 
 def test_summary_cross_check_warns_on_mismatch(tmp_path, monkeypatch):

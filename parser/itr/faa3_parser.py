@@ -135,6 +135,29 @@ def parse_org_purchases(
                 ),
             )
 
+        if purchase.date["time_in_millis"] > end_time_in_ms:
+            # Acquired after the reporting period already ended - it wasn't
+            # held at any point during the period, so there's no peak/closing
+            # value to compute (unlike is_not_reportable above, this is about
+            # the *acquisition* date, not a sale).
+            return FAA3(
+                org,
+                purchase=purchase,
+                peak_price=0,
+                purchase_price=0,
+                closing_price=0,
+                sale_proceeds=0,
+                purchase_rate=0,
+                peak_share_price=0,
+                peak_date_in_millis=None,
+                peak_rate=0,
+                closing_share_price=closing_share_price,
+                closing_rate=closing_rbi_rate,
+                quantity_sold=0,
+                sale_proceeds_native=0,
+                comment="Acquired after end of period - not reported for this period",
+            )
+
         purchase_rate = rbi_rates_utils.get_rate_for_prev_mon_for_time_in_ms(
             currency_code, purchase.date["time_in_millis"]
         )

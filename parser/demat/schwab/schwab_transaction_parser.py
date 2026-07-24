@@ -4,7 +4,7 @@ import typing as t
 from collections import deque
 
 from utils.runtime_utils import warn_missing_module
-from utils import logger, file_utils, date_utils, ticker_mapping
+from utils import logger, file_utils, date_utils, share_data_utils, ticker_mapping
 
 warn_missing_module("pandas")
 import pandas as pd
@@ -16,19 +16,36 @@ from models.dividend import DividendEvent
 
 BUY_ACTION = "Buy"
 SELL_ACTION = "Sell"
+# Shares deposited into the account directly from an equity award plan (e.g.
+# RSU vesting) - no Price column is given, so cost basis is derived from the
+# market closing price on the deposit date, same as ETRADE RSU releases.
+STOCK_PLAN_ACTIVITY_ACTION = "Stock Plan Activity"
+# Dividends automatically used to buy more (usually fractional) shares - has
+# a real Price column, same as a regular Buy.
+REINVEST_ACTION = "Reinvest Shares"
+ACQUISITION_ACTIONS = (BUY_ACTION, STOCK_PLAN_ACTIVITY_ACTION, REINVEST_ACTION)
 # Matches "Qualified Div", "Cash Dividend", "Special Dividend", "Non-Qualified
 # Div", etc. - Schwab's dividend-type Actions all contain "Div".
 DIVIDEND_ACTION_MARKER = "Div"
 # Tax withheld for non-resident-alien accounts. Also appears against interest
 # (blank Symbol) - only rows with a Symbol are dividend tax withholding.
 TAX_ACTION = "NRA Tax Adj"
+# Fractional shares (dividend reinvestment, etc.) accumulate floating-point
+# drift across repeated subtraction - a lot considered "fully consumed" can
+# be left with e.g. 1e-16 "remaining" instead of exactly 0. Comparisons that
+# decide whether a lot is exhausted / a sell is fully matched use this
+# tolerance instead of comparing to 0 directly.
+QUANTITY_EPSILON = 1e-6
 
 
 class _Lot:
-    def __init__(self, date: date_utils.DateObj, price: float, quantity: float):
+    def __init__(
+        self, date: date_utils.DateObj, price: float, quantity: float, holding_type: str
+    ):
         self.date = date
         self.price = price
         self.original_quantity = quantity
+        self.holding_type = holding_type
         # Remaining quantity, drawn down as later sells consume this lot via FIFO.
         self.remaining_quantity = quantity
         # Sell events that consumed part (or all) of this lot, in order.
@@ -50,7 +67,7 @@ def _parse_amount(value: str) -> float:
 
 def _read_transactions(input_file_abs_path: str) -> t.List[dict]:
     df = pd.read_csv(input_file_abs_path)
-    df = df[df["Action"].isin([BUY_ACTION, SELL_ACTION])]
+    df = df[df["Action"].isin([*ACQUISITION_ACTIONS, SELL_ACTION])]
     rows = df.to_dict("records")
     rows.sort(key=lambda row: date_utils.parse_m_d_yy(row["Date"])["time_in_millis"])
     return rows
@@ -96,15 +113,23 @@ def _net_fifo(
 
         quantity = float(row["Quantity"])
         lots = open_lots.setdefault(ticker, deque())
-        if row["Action"] == BUY_ACTION:
-            lot = _Lot(date_obj, _parse_price(row["Price"]), quantity)
+        if row["Action"] in ACQUISITION_ACTIONS:
+            if row["Action"] == STOCK_PLAN_ACTIVITY_ACTION:
+                # No Price column for these - use the market closing price on
+                # the deposit date, same as ETRADE RSU vest-date FMV.
+                price = share_data_utils.get_fmv(ticker, date_obj["time_in_millis"])
+                holding_type = "RSU"
+            else:
+                price = _parse_price(row["Price"])
+                holding_type = "Trade"
+            lot = _Lot(date_obj, price, quantity, holding_type)
             lots.append(lot)
             all_lots.setdefault(ticker, []).append(lot)
             continue
 
         sale_price = _parse_price(row["Price"])
         remaining_to_sell = quantity
-        while remaining_to_sell > 0:
+        while remaining_to_sell > QUANTITY_EPSILON:
             assert lots, (
                 f"More shares sold than bought for '{ticker}' as of {date_obj['disp_time']} - "
                 + "your export may not cover the full transaction history for this ticker"
@@ -114,7 +139,11 @@ def _net_fifo(
             oldest.remaining_quantity -= consumed
             oldest.disposals.append(Disposal(date_obj, consumed, sale_price))
             remaining_to_sell -= consumed
-            if oldest.remaining_quantity <= 0:
+            if oldest.remaining_quantity <= QUANTITY_EPSILON:
+                # Clamp away any floating-point residue (e.g. 7.9e-16) left
+                # over from repeated fractional-share subtraction, rather
+                # than reporting a lot as having a dust-sized closing balance.
+                oldest.remaining_quantity = 0.0
                 lots.popleft()
 
     purchases: t.List[Purchase] = []
@@ -128,7 +157,7 @@ def _net_fifo(
                     ticker=ticker,
                     closing_quantity=lot.remaining_quantity,
                     disposals=lot.disposals,
-                    holding_type="Trade",
+                    holding_type=lot.holding_type,
                 )
             )
     return purchases

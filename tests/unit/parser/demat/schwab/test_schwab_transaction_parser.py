@@ -102,6 +102,87 @@ def test_ticker_fully_sold_out_is_not_dropped(tmp_path):
     assert purchases[0].closing_quantity == 0
 
 
+def test_stock_plan_activity_is_treated_as_rsu_acquisition(tmp_path):
+    # Shares deposited from an equity award plan (e.g. RSU vesting) have no
+    # Price column at all - cost basis must come from the market closing
+    # price on the deposit date instead, same as ETRADE RSU releases.
+    csv_path = write_csv(
+        tmp_path,
+        [
+            "10/3/25,Stock Plan Activity,AAPL,APPLE INC,2,,,,,,,,,",
+        ],
+    )
+    purchases = schwab_transaction_parser.parse(csv_path, str(tmp_path / "out"), None)
+
+    assert len(purchases) == 1
+    purchase = purchases[0]
+    assert purchase.holding_type == "RSU"
+    assert purchase.quantity == 2
+    assert purchase.purchase_fmv.price == 258.0199890136719
+
+
+def test_stock_plan_activity_shares_can_later_be_sold(tmp_path):
+    # Regression test: Stock Plan Activity deposits used to be silently
+    # dropped entirely, so a later Sell of those same shares had no lot to
+    # consume and crashed with "More shares sold than bought" - even though
+    # the shares genuinely were acquired, just via a transfer rather than a
+    # Buy.
+    csv_path = write_csv(
+        tmp_path,
+        [
+            "10/3/25,Stock Plan Activity,AAPL,APPLE INC,2,,,,,,,,,",
+            "11/4/25,Sell,AAPL,APPLE INC,2,$193.50 ,,$387.00 ,,,,,,",
+        ],
+    )
+    purchases = schwab_transaction_parser.parse(csv_path, str(tmp_path / "out"), None)
+
+    assert len(purchases) == 1
+    purchase = purchases[0]
+    assert purchase.closing_quantity == 0
+    assert len(purchase.disposals) == 1
+    assert purchase.disposals[0].quantity == 2
+
+
+def test_reinvest_shares_is_treated_as_acquisition(tmp_path):
+    # Dividend reinvestment ("Reinvest Shares") buys additional (usually
+    # fractional) shares and has a real Price column, unlike Stock Plan
+    # Activity - it should be treated just like a regular Buy.
+    csv_path = write_csv(
+        tmp_path,
+        [
+            "10/3/25,Reinvest Shares,AAPL,APPLE INC,0.05,$258.00 ,,($12.90),,,,,,",
+        ],
+    )
+    purchases = schwab_transaction_parser.parse(csv_path, str(tmp_path / "out"), None)
+
+    assert len(purchases) == 1
+    purchase = purchases[0]
+    assert purchase.holding_type == "Trade"
+    assert purchase.quantity == 0.05
+    assert purchase.purchase_fmv.price == 258.00
+
+
+def test_reinvested_shares_can_later_be_sold(tmp_path):
+    # Regression test: Reinvest Shares rows used to be silently dropped, so
+    # a Sell that included previously-reinvested fractional shares had no
+    # lot to consume and crashed with "More shares sold than bought" - e.g.
+    # a Buy of 9 whole shares plus small Reinvest Shares fractions adding up
+    # to 9.0271, then a Sell of exactly 9.0271.
+    csv_path = write_csv(
+        tmp_path,
+        [
+            "4/23/25,Buy,AAPL,APPLE INC,9,$251.70 ,,($2265.30),,,,,,",
+            "7/10/25,Reinvest Shares,AAPL,APPLE INC,0.0271,$265.15 ,,($7.19),,,,,,",
+            "3/30/26,Sell,AAPL,APPLE INC,9.0271,$185.00 ,,\"$1,670.01\",,,,,,",
+        ],
+    )
+    purchases = schwab_transaction_parser.parse(csv_path, str(tmp_path / "out"), None)
+
+    assert len(purchases) == 2
+    assert sum(p.closing_quantity for p in purchases) == 0
+    assert sum(d.quantity for p in purchases for d in p.disposals) == 9.0271
+
+
 def test_oversell_raises_clear_error(tmp_path):
     csv_path = write_csv(
         tmp_path,

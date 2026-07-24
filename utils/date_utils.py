@@ -83,9 +83,13 @@ def parse_yyyy_mm_dd(date_str) -> DateObj:
 
 def parse_m_d_yy(date_str: str) -> DateObj:
     """
-    Parses formats like 11/7/25 (Schwab transaction export dates) in time from epoch in milliseconds
+    Parses Schwab transaction export dates. Schwab has been seen exporting
+    both a 2-digit year (e.g. 11/7/25) and a 4-digit year (e.g. 07/08/2026)
+    depending on the export, so both are accepted here.
     """
-    date_time = datetime.strptime(date_str, "%m/%d/%y")
+    year_str = date_str.split("/")[-1]
+    date_format = "%m/%d/%Y" if len(year_str) == 4 else "%m/%d/%y"
+    date_time = datetime.strptime(date_str, date_format)
     return __create_date_object(date_time, date_str)
 
 
